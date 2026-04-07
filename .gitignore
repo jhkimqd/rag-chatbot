@@ -17,9 +17,13 @@ venv/
 # environment secrets
 .env
 
-# IDE
-.vscode/
+# IDE — commit shared settings, ignore personal overrides
+.vscode/*
+!.vscode/settings.json
 .idea/
+
+# direnv cache
+.direnv/
 
 # OS
 .DS_Store

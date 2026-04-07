@@ -14,9 +14,16 @@ For architectural details see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick Start
 
+> **Auto venv (recommended):** Install [direnv](https://direnv.net), then run `direnv allow` once after cloning. The `.venv` will be created and activated automatically every time you `cd` into the project. VS Code users get the venv picked up automatically via `.vscode/settings.json`.
+
 ```bash
-# Clone and install
+# Clone
 git clone <repo-url> && cd polygon-chatbot
+
+# One-time: allow direnv to manage the venv (creates .venv + installs deps)
+direnv allow
+
+# Without direnv: manual setup
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
