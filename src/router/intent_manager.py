@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from enum import Enum
 
-import anthropic
-
 from src.config import settings
+from src.llm import make_client
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ Respond with EXACTLY one word: DOCS, OPS, or HYBRID."""
 
 async def classify_intent(message: str) -> Intent:
     """Classify a natural-language message into DOCS, OPS, or HYBRID."""
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = make_client()
     try:
         response = await client.messages.create(
             model=settings.classifier_model,

@@ -56,9 +56,12 @@ class Settings(BaseSettings):
         import os
 
         if not v and os.getenv("TESTING") != "1":
-            raise ValueError(
-                "ANTHROPIC_API_KEY is required. Set it in .env or as an environment variable."
-            )
+            env = os.getenv("ENVIRONMENT", "development").lower()
+            if env == "production":
+                raise ValueError(
+                    "ANTHROPIC_API_KEY is required in production. "
+                    "Set it in .env or as an environment variable."
+                )
         return v
 
 

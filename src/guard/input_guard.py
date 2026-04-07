@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import re
 
-import anthropic
-
 from src.config import settings
+from src.llm import make_client
 
 _SYSTEM_PROMPT = """You are a topic filter for a Polygon blockchain support bot.
 
@@ -35,7 +34,7 @@ async def check_relevance(message: str) -> bool:
     if _INJECTION_PATTERNS.search(message):
         return False
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = make_client()
     try:
         response = await client.messages.create(
             model=settings.classifier_model,

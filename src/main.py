@@ -89,6 +89,19 @@ class ChatResponse(BaseModel):
     metadata: dict | None = None
 
 
+@app.get("/", include_in_schema=False)
+async def root() -> JSONResponse:
+    return JSONResponse({
+        "service": "Polygon Hybrid Bot",
+        "version": "0.1.0",
+        "endpoints": {
+            "chat": "POST /chat",
+            "health": "GET /health",
+            "docs": "GET /docs  (development only)",
+        },
+    })
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
     request: Request,
@@ -100,12 +113,11 @@ async def chat(
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
     try:
-        async with asyncio.timeout(settings.request_timeout_seconds):
-            result = await route_input(
-                message=body.message,
-                user_id=body.user_id,
-            )
-    except TimeoutError:
+        result = await asyncio.wait_for(
+            route_input(message=body.message, user_id=body.user_id),
+            timeout=settings.request_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
         return ChatResponse(
             reply="Request timed out. Please try a simpler question.",
             source="system",

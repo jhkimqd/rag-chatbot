@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 
-import anthropic
-
 from src.config import settings
+from src.llm import make_client
 from src.ops.tools import TOOL_DEFINITIONS, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,7 @@ MAX_TOOL_ROUNDS = 5
 
 async def run_ops_agent(query: str) -> dict:
     """Run the tool-calling agent loop to answer an operational question."""
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = make_client()
 
     messages: list[dict] = [{"role": "user", "content": query}]
     sources: list[str] = []

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-import httpx
 from qdrant_client import AsyncQdrantClient, models
 
 from src.config import settings
@@ -54,8 +53,8 @@ async def retrieve(query: str, top_k: int | None = None) -> list[RetrievedChunk]
 
         # Prefer fusion results if available, fall back to vector-only
         results = keyword_results.points if keyword_results.points else vector_results.points
-    except (httpx.HTTPError, ConnectionError, ValueError) as exc:
-        logger.error("Qdrant retrieval failed: %s", exc)
+    except Exception as exc:
+        logger.warning("Qdrant retrieval failed: %s — returning empty results", exc)
         return []
     finally:
         await client.close()

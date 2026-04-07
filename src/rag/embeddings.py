@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from src.config import settings
@@ -12,7 +13,7 @@ _model = None
 
 
 def _get_model():
-    """Lazy-load the sentence-transformers model on first use."""
+    """Lazy-load the sentence-transformers model on first use (blocking, call in thread)."""
     global _model  # noqa: PLW0603
     if _model is None:
         from sentence_transformers import SentenceTransformer
@@ -23,14 +24,16 @@ def _get_model():
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate embeddings for a batch of texts."""
-    model = _get_model()
-    embeddings = model.encode(texts, normalize_embeddings=True)
-    return embeddings.tolist()
+    """Generate embeddings for a batch of texts (runs in thread pool)."""
+    def _encode() -> list[list[float]]:
+        return _get_model().encode(texts, normalize_embeddings=True).tolist()
+
+    return await asyncio.to_thread(_encode)
 
 
 async def embed_query(text: str) -> list[float]:
-    """Generate a single query embedding."""
-    model = _get_model()
-    embedding = model.encode([text], normalize_embeddings=True)
-    return embedding[0].tolist()
+    """Generate a single query embedding (runs in thread pool)."""
+    def _encode() -> list[float]:
+        return _get_model().encode([text], normalize_embeddings=True)[0].tolist()
+
+    return await asyncio.to_thread(_encode)

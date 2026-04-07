@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 
-import anthropic
-
 from src.config import settings
+from src.llm import make_client
 from src.rag.retriever import retrieve
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ async def run_rag_pipeline(query: str) -> dict:
         f"[Source: {c.source}]\n{c.text}" for c in chunks
     )
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = make_client()
     try:
         response = await client.messages.create(
             model=settings.reasoning_model,

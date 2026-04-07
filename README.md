@@ -22,16 +22,25 @@ pip install -e ".[dev]"
 
 # Configure
 cp .env.example .env
-# Edit .env — at minimum set ANTHROPIC_API_KEY
+# ANTHROPIC_API_KEY is optional in development — mock responses are returned without it
 
 # Start Qdrant (vector DB)
 docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
 
 # Run the server
 python -m src.main
+
+# Run test command
+# Natural language question
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How do I deploy a contract on Polygon PoS?"}'
+
 ```
 
 The API is now live at `http://localhost:8000`.
+
+> **Dev mode:** Leave `ANTHROPIC_API_KEY` blank and the bot runs in mock mode — all LLM calls return a `[DEV MODE]` stub response so you can test routing, commands, and the API surface without spending API credits. Set `ENVIRONMENT=production` to make the key required.
 
 ## API Usage
 
