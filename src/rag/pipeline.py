@@ -41,6 +41,9 @@ async def run_rag_pipeline(query: str) -> dict:
         f"[Source: {c.source}]\n{c.text}" for c in chunks
     )
 
+    # Escape XML-like tags in user input to prevent prompt boundary injection
+    safe_query = query.replace("<", "&lt;").replace(">", "&gt;")
+
     client = make_client()
     try:
         response = await client.messages.create(
@@ -52,7 +55,7 @@ async def run_rag_pipeline(query: str) -> dict:
                     "role": "user",
                     "content": (
                         f"<context>\n{context_block}\n</context>\n\n"
-                        f"<question>\n{query}\n</question>"
+                        f"<question>\n{safe_query}\n</question>"
                     ),
                 }
             ],

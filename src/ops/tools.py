@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 import httpx
@@ -76,6 +77,9 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+
+_ALLOWED_MONITOR_TAG_PATTERN = re.compile(r"^[a-zA-Z0-9_.:\-/]+$")
 
 
 async def execute_tool(name: str, inputs: dict) -> str:
@@ -193,6 +197,9 @@ async def _get_monitors(tag: str | None) -> str:
     """Fetch triggered Datadog monitors."""
     if not settings.datadog_api_key:
         return "Datadog integration not configured."
+
+    if tag and not _ALLOWED_MONITOR_TAG_PATTERN.match(tag):
+        return "Invalid tag format. Tags must be alphanumeric with colons, hyphens, or dots."
 
     params: dict = {"monitor_tags": tag} if tag else {}
 

@@ -7,11 +7,11 @@ import hashlib
 import hmac
 import logging
 import time
-from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -21,33 +21,66 @@ from src.router.protocol_switch import route_input
 logger = logging.getLogger(__name__)
 
 
-# --- Simple in-memory rate limiter ---
+# --- In-memory rate limiter with TTL eviction ---
 
-_rate_store: dict[str, list[float]] = defaultdict(list)
+_MAX_TRACKED_IPS = 50_000
+_WINDOW_SECONDS = 60.0
+_CLEANUP_INTERVAL = 300.0
+
+_rate_store: dict[str, list[float]] = {}
+_last_cleanup: float = 0.0
+
+
+def _evict_stale_entries() -> None:
+    """Periodically remove expired entries to prevent memory exhaustion."""
+    global _last_cleanup  # noqa: PLW0603
+    now = time.monotonic()
+    if now - _last_cleanup < _CLEANUP_INTERVAL:
+        return
+    _last_cleanup = now
+    stale_keys = [
+        k for k, timestamps in _rate_store.items()
+        if not timestamps or now - timestamps[-1] >= _WINDOW_SECONDS
+    ]
+    for k in stale_keys:
+        del _rate_store[k]
 
 
 def _check_rate_limit(key: str) -> bool:
     """Return True if the request is within rate limits."""
-    now = time.monotonic()
-    window = 60.0
-    _rate_store[key] = [t for t in _rate_store[key] if now - t < window]
-    if len(_rate_store[key]) >= settings.rate_limit_per_minute:
+    _evict_stale_entries()
+
+    if key not in _rate_store and len(_rate_store) >= _MAX_TRACKED_IPS:
         return False
-    _rate_store[key].append(now)
+
+    now = time.monotonic()
+    timestamps = _rate_store.get(key, [])
+    timestamps = [t for t in timestamps if now - t < _WINDOW_SECONDS]
+    if len(timestamps) >= settings.rate_limit_per_minute:
+        _rate_store[key] = timestamps
+        return False
+    timestamps.append(now)
+    _rate_store[key] = timestamps
     return True
 
 
-# --- Auth dependency ---
+# --- Auth dependency (pre-computed hash for constant-time comparison) ---
+
+_api_key_hash: bytes | None = (
+    hashlib.sha256(settings.chatbot_api_key.encode()).digest()
+    if settings.chatbot_api_key
+    else None
+)
 
 
 async def verify_api_key(request: Request) -> str:
     """Verify the X-API-Key header if authentication is configured."""
-    if not settings.chatbot_api_key:
+    if _api_key_hash is None:
         return "anonymous"
     api_key = request.headers.get("X-API-Key", "")
     if not api_key or not hmac.compare_digest(
         hashlib.sha256(api_key.encode()).digest(),
-        hashlib.sha256(settings.chatbot_api_key.encode()).digest(),
+        _api_key_hash,
     ):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return "authenticated"
@@ -75,6 +108,29 @@ app = FastAPI(
     openapi_url=None if _is_prod else "/openapi.json",
 )
 
+# --- Security middleware ---
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[] if _is_prod else ["http://localhost:3000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["X-API-Key", "Content-Type"],
+    allow_credentials=False,
+)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next) -> Response:  # noqa: ANN001
+    """Add security headers to every response."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    if _is_prod:
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=settings.max_message_length)
@@ -91,15 +147,15 @@ class ChatResponse(BaseModel):
 
 @app.get("/", include_in_schema=False)
 async def root() -> JSONResponse:
-    return JSONResponse({
-        "service": "Polygon Hybrid Bot",
-        "version": "0.1.0",
-        "endpoints": {
+    payload: dict = {"service": "Polygon Hybrid Bot"}
+    if not _is_prod:
+        payload["version"] = "0.1.0"
+        payload["endpoints"] = {
             "chat": "POST /chat",
             "health": "GET /health",
             "docs": "GET /docs  (development only)",
-        },
-    })
+        }
+    return JSONResponse(payload)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -128,7 +184,10 @@ async def chat(
 
 @app.get("/health")
 async def healthcheck() -> dict:
-    return {"status": "ok", "version": "0.1.0"}
+    payload: dict = {"status": "ok"}
+    if not _is_prod:
+        payload["version"] = "0.1.0"
+    return payload
 
 
 @app.exception_handler(Exception)
