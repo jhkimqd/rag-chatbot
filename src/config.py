@@ -21,8 +21,16 @@ _ALLOWED_DATADOG_SITES = frozenset({
 
 
 class Settings(BaseSettings):
+    # LLM backend: "anthropic" or "ollama"
+    llm_backend: str = "anthropic"
+
     # Anthropic
     anthropic_api_key: str = ""
+
+    # Ollama
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2"
+    ollama_classifier_model: str = "llama3.2"
 
     # Polygon RPC
     polygon_rpc_url: str = "https://polygon-rpc.com"
@@ -51,6 +59,7 @@ class Settings(BaseSettings):
     log_level: str = "info"
     chatbot_api_key: str = ""
     rate_limit_per_minute: int = Field(default=30, ge=1)
+    daily_request_limit: int = Field(default=200, ge=1)
     request_timeout_seconds: int = Field(default=60, ge=10, le=300)
     max_message_length: int = Field(default=2000, ge=1, le=10000)
 
@@ -67,12 +76,14 @@ class Settings(BaseSettings):
     @field_validator("anthropic_api_key")
     @classmethod
     def validate_anthropic_key(cls, v: str) -> str:
-        if not v and os.getenv("TESTING") != "1":
+        backend = os.getenv("LLM_BACKEND", "anthropic").lower()
+        if not v and backend == "anthropic" and os.getenv("TESTING") != "1":
             env = os.getenv("ENVIRONMENT", "development").lower()
             if env == "production":
                 raise ValueError(
-                    "ANTHROPIC_API_KEY is required in production. "
-                    "Set it in .env or as an environment variable."
+                    "ANTHROPIC_API_KEY is required in production when using "
+                    "the anthropic backend. Set it in .env or as an environment "
+                    "variable, or use LLM_BACKEND=ollama."
                 )
         return v
 

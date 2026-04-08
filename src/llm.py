@@ -1,32 +1,59 @@
-"""LLM client factory — returns a real or mock Anthropic client based on config."""
+"""LLM client factory — returns the right client based on LLM_BACKEND config."""
 
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import anthropic
 
 from src.config import settings
 
+if TYPE_CHECKING:
+    from src.ollama_client import OllamaClient
+
 logger = logging.getLogger(__name__)
 
 _DEV_REPLY = (
-    "**[DEV MODE]** No `ANTHROPIC_API_KEY` configured — returning a mock response.\n\n"
-    "Set `ANTHROPIC_API_KEY` in your `.env` file to get real answers."
+    "**[DEV MODE]** No LLM backend configured — returning a mock response.\n\n"
+    "Set `LLM_BACKEND=ollama` in your `.env` to use a local model, or set "
+    "`ANTHROPIC_API_KEY` to use the Anthropic API."
 )
 
 
 def is_dev_mode() -> bool:
-    """True when no real Anthropic API key is configured."""
+    """True when no usable LLM backend is configured."""
+    if settings.llm_backend == "ollama":
+        return False
     return not settings.anthropic_api_key
 
 
-def make_client() -> anthropic.AsyncAnthropic | _MockAnthropicClient:
-    """Return a real Anthropic client, or a mock client in dev mode."""
-    if is_dev_mode():
-        logger.debug("Dev mode: using mock Anthropic client")
-        return _MockAnthropicClient()
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+def make_client() -> anthropic.AsyncAnthropic | OllamaClient | _MockAnthropicClient:
+    """Return the appropriate LLM client based on configuration.
+
+    - LLM_BACKEND=ollama  → OllamaClient (local, no API key needed)
+    - LLM_BACKEND=anthropic + key set → real Anthropic client
+    - LLM_BACKEND=anthropic + no key  → mock client (dev only)
+
+    Raises RuntimeError in production if no usable backend is configured.
+    """
+    if settings.llm_backend == "ollama":
+        from src.ollama_client import OllamaClient
+
+        logger.debug("Using Ollama backend at %s", settings.ollama_url)
+        return OllamaClient()
+
+    if settings.anthropic_api_key:
+        return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    # No backend available — mock or fail
+    if settings.environment == "production":
+        raise RuntimeError(
+            "No LLM backend configured for production. Set ANTHROPIC_API_KEY "
+            "or use LLM_BACKEND=ollama."
+        )
+    logger.debug("Dev mode: using mock client")
+    return _MockAnthropicClient()
 
 
 # ---------------------------------------------------------------------------

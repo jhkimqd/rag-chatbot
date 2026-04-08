@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 _MAX_TRACKED_IPS = 50_000
 _WINDOW_SECONDS = 60.0
 _CLEANUP_INTERVAL = 300.0
+_DAY_SECONDS = 86_400.0
 
 _rate_store: dict[str, list[float]] = {}
+_daily_store: dict[str, list[float]] = {}
 _last_cleanup: float = 0.0
 
 
@@ -45,9 +47,17 @@ def _evict_stale_entries() -> None:
     for k in stale_keys:
         del _rate_store[k]
 
+    # Evict expired daily entries
+    stale_daily = [
+        k for k, timestamps in _daily_store.items()
+        if not timestamps or now - timestamps[0] >= _DAY_SECONDS
+    ]
+    for k in stale_daily:
+        del _daily_store[k]
+
 
 def _check_rate_limit(key: str) -> bool:
-    """Return True if the request is within rate limits."""
+    """Return True if the request is within per-minute rate limits."""
     _evict_stale_entries()
 
     if key not in _rate_store and len(_rate_store) >= _MAX_TRACKED_IPS:
@@ -61,6 +71,19 @@ def _check_rate_limit(key: str) -> bool:
         return False
     timestamps.append(now)
     _rate_store[key] = timestamps
+    return True
+
+
+def _check_daily_limit(key: str) -> bool:
+    """Return True if the request is within daily request budget."""
+    now = time.monotonic()
+    timestamps = _daily_store.get(key, [])
+    timestamps = [t for t in timestamps if now - t < _DAY_SECONDS]
+    if len(timestamps) >= settings.daily_request_limit:
+        _daily_store[key] = timestamps
+        return False
+    timestamps.append(now)
+    _daily_store[key] = timestamps
     return True
 
 
@@ -167,6 +190,8 @@ async def chat(
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    if not _check_daily_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Daily request limit reached. Try again tomorrow.")
 
     try:
         result = await asyncio.wait_for(

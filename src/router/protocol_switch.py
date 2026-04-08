@@ -6,6 +6,7 @@ import logging
 
 from src.commands.registry import execute_command, has_command
 from src.guard.input_guard import check_relevance
+from src.guard.output_guard import check_output
 from src.ops.agent import run_ops_agent
 from src.rag.pipeline import run_rag_pipeline
 from src.router.intent_manager import Intent, classify_intent
@@ -59,11 +60,13 @@ async def route_input(
 
     if intent == Intent.DOCS:
         rag_result = await run_rag_pipeline(message)
-        return format_response(rag_result, route="rag")
+        response = format_response(rag_result, route="rag")
+        return await _apply_output_guard(response, message)
 
     if intent == Intent.OPS:
         ops_result = await run_ops_agent(message)
-        return format_response(ops_result, route="ops")
+        response = format_response(ops_result, route="ops")
+        return await _apply_output_guard(response, message)
 
     # HYBRID: run both and merge
     rag_result = await run_rag_pipeline(message)
@@ -73,7 +76,20 @@ async def route_input(
         f"---\n**Live Data:**\n{ops_result['answer']}"
     )
     sources = list({*rag_result.get("sources", []), *ops_result.get("sources", [])})
-    return format_response(
+    response = format_response(
         {"answer": merged_reply, "sources": sources},
         route="hybrid",
     )
+    return await _apply_output_guard(response, message)
+
+
+async def _apply_output_guard(response: dict, original_query: str) -> dict:
+    """Run the output guard and replace the response if it fails."""
+    replacement = await check_output(response["reply"], original_query)
+    if replacement is not None:
+        return {
+            "reply": replacement,
+            "source": "system",
+            "route": "rejected",
+        }
+    return response

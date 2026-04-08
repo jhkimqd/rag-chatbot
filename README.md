@@ -9,45 +9,50 @@ For architectural details see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Prerequisites
 
 - Python 3.10+
-- [Anthropic API key](https://console.anthropic.com/)
-- Docker (for Qdrant, or use Qdrant Cloud)
+- Docker (for Qdrant and Ollama)
 
 ## Quick Start
-
-> **Auto venv (recommended):** Install [direnv](https://direnv.net), then run `direnv allow` once after cloning. The `.venv` will be created and activated automatically every time you `cd` into the project. VS Code users get the venv picked up automatically via `.vscode/settings.json`.
 
 ```bash
 # Clone
 git clone <repo-url> && cd polygon-chatbot
 
-# One-time: allow direnv to manage the venv (creates .venv + installs deps)
-direnv allow
-
-# Without direnv: manual setup
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Configure
+# Configure (defaults to Ollama — no API key needed)
 cp .env.example .env
-# ANTHROPIC_API_KEY is optional in development — mock responses are returned without it
 
-# Start Qdrant (vector DB)
-docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
+# Start everything (Qdrant + Ollama + doc ingestion + server)
+./dev.sh up
 
-# Run the server
-python -m src.main
-
-# Run test command
-# Natural language question
+# Test it
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "How do I deploy a contract on Polygon PoS?"}'
 
+# Stop everything
+./dev.sh down
 ```
 
 The API is now live at `http://localhost:8000`.
 
-> **Dev mode:** Leave `ANTHROPIC_API_KEY` blank and the bot runs in mock mode — all LLM calls return a `[DEV MODE]` stub response so you can test routing, commands, and the API surface without spending API credits. Set `ENVIRONMENT=production` to make the key required.
+### dev.sh commands
+
+| Command            | Description                                         |
+|--------------------|-----------------------------------------------------|
+| `./dev.sh up`      | Start Qdrant + Ollama, pull model, ingest docs, run server |
+| `./dev.sh down`    | Stop all containers                                 |
+| `./dev.sh ingest`  | Re-ingest docs into Qdrant (must be running)        |
+| `./dev.sh server`  | Run just the server (deps must be running)          |
+
+### LLM Backend
+
+Set `LLM_BACKEND` in `.env`:
+
+| Backend | Config | Notes |
+|---------|--------|-------|
+| **Ollama** (default) | `LLM_BACKEND=ollama` | Free, local. Model pulled automatically on first `./dev.sh up` |
+| **Anthropic API** | `LLM_BACKEND=anthropic` + `ANTHROPIC_API_KEY=sk-ant-...` | Production-grade, requires API key from console.anthropic.com |
+
+> **Alternative setup:** Install [direnv](https://direnv.net) and run `direnv allow` for auto venv management. Or manually: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
 
 ## API Usage
 
@@ -133,25 +138,28 @@ Tests use mocks for all external services — no API keys or running services ne
 
 ## Local Development
 
-Full end-to-end local setup:
+The simplest path is `./dev.sh up` which handles everything. For more control:
 
 ```bash
-# 1. Start Qdrant
-docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
+# Start just Qdrant
+docker compose up -d
 
-# 2. Set your Anthropic key
-echo 'ANTHROPIC_API_KEY=sk-ant-your-key' > .env
+# Ingest/re-ingest docs
+python scripts/ingest.py
 
-# 3. Run the server in reload mode
+# Run the server with hot reload
 uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
-
-# 4. Test it
-curl -s http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "/health"}' | python -m json.tool
 ```
 
 > **Note:** The embedding model (`all-MiniLM-L6-v2`) downloads automatically on first use (~80MB). Subsequent starts are instant.
+
+### Adding Documentation
+
+Add markdown files to `data/docs/`, then re-ingest:
+
+```bash
+./dev.sh ingest
+```
 
 ## Production Deployment
 

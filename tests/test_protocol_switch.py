@@ -43,8 +43,10 @@ async def test_docs_intent_routes_to_rag():
         patch("src.router.protocol_switch.check_relevance", new_callable=AsyncMock) as mock_guard,
         patch("src.router.protocol_switch.classify_intent", new_callable=AsyncMock) as mock_cls,
         patch("src.router.protocol_switch.run_rag_pipeline", new_callable=AsyncMock) as mock_rag,
+        patch("src.router.protocol_switch.check_output", new_callable=AsyncMock) as mock_out,
     ):
         mock_guard.return_value = True
+        mock_out.return_value = None
         from src.router.intent_manager import Intent
 
         mock_cls.return_value = Intent.DOCS
@@ -63,8 +65,10 @@ async def test_ops_intent_routes_to_agent():
         patch("src.router.protocol_switch.check_relevance", new_callable=AsyncMock) as mock_guard,
         patch("src.router.protocol_switch.classify_intent", new_callable=AsyncMock) as mock_cls,
         patch("src.router.protocol_switch.run_ops_agent", new_callable=AsyncMock) as mock_ops,
+        patch("src.router.protocol_switch.check_output", new_callable=AsyncMock) as mock_out,
     ):
         mock_guard.return_value = True
+        mock_out.return_value = None
         from src.router.intent_manager import Intent
 
         mock_cls.return_value = Intent.OPS
@@ -84,8 +88,10 @@ async def test_hybrid_merges_rag_and_ops():
         patch("src.router.protocol_switch.classify_intent", new_callable=AsyncMock) as mock_cls,
         patch("src.router.protocol_switch.run_rag_pipeline", new_callable=AsyncMock) as mock_rag,
         patch("src.router.protocol_switch.run_ops_agent", new_callable=AsyncMock) as mock_ops,
+        patch("src.router.protocol_switch.check_output", new_callable=AsyncMock) as mock_out,
     ):
         mock_guard.return_value = True
+        mock_out.return_value = None
         from src.router.intent_manager import Intent
 
         mock_cls.return_value = Intent.HYBRID
