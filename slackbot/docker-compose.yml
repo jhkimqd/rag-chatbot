@@ -1,0 +1,17 @@
+services:
+  # Ollama is optional — use this if you don't have Ollama installed natively.
+  # Start with: docker compose up -d
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ollama_data:

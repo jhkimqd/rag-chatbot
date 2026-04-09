@@ -1,143 +1,119 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Single entry point for local development.
+# Top-level dev script — manages Ollama and routes to each component.
 # Usage:
-#   ./dev.sh up       — Start deps, pull model, ingest docs, run server
-#   ./dev.sh down     — Stop all containers
-#   ./dev.sh ingest   — Re-ingest docs into Qdrant (must be running)
-#   ./dev.sh server   — Run just the server (deps must be running)
+#   ./dev.sh mcp       — Test MCP server tools with Ollama (interactive CLI)
+#   ./dev.sh bot       — Test Slack bot routing with Ollama (interactive CLI)
+#   ./dev.sh slack     — Run the actual Slack bot (needs Slack tokens)
+#   ./dev.sh down      — Stop Ollama container
+#   ./dev.sh test      — Run tests for both components
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
-# Load config from .env
-LLM_BACKEND=$(grep -E '^LLM_BACKEND=' .env 2>/dev/null | cut -d= -f2 || echo "ollama")
-OLLAMA_MODEL=$(grep -E '^OLLAMA_MODEL=' .env 2>/dev/null | cut -d= -f2 || echo "llama3.2")
-
-# Ensure venv exists and is active
-if [ ! -d .venv ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv .venv
-    .venv/bin/pip install -e ".[dev]" --quiet
-fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
-
-wait_for_qdrant() {
-    echo "Waiting for Qdrant to be ready..."
-    for _i in $(seq 1 30); do
-        if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then
-            echo "Qdrant is ready."
-            return 0
-        fi
-        sleep 1
-    done
-    echo "ERROR: Qdrant did not become ready in 30 seconds."
-    exit 1
-}
-
-wait_for_ollama() {
-    echo "Waiting for Ollama to be ready..."
-    for _i in $(seq 1 60); do
-        if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-            echo "Ollama is ready."
-            return 0
-        fi
-        sleep 1
-    done
-    echo "ERROR: Ollama did not become ready in 60 seconds."
-    exit 1
-}
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2}"
 
 ensure_ollama() {
-    # Check if Ollama is already running (native install)
     if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-        echo "Ollama is already running (native)."
+        echo "Ollama is already running."
     else
         echo "Ollama not detected — starting via Docker..."
-        docker compose --profile ollama up -d
-        wait_for_ollama
+        docker compose -f slackbot/docker-compose.yml up -d
+        echo "Waiting for Ollama..."
+        for _i in $(seq 1 60); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+                echo "Ollama is ready."
+                break
+            fi
+            sleep 1
+        done
     fi
 
-    # Ensure the model is available
-    if curl -sf http://localhost:11434/api/tags 2>/dev/null | python3 -c "
+    if ! curl -sf http://localhost:11434/api/tags 2>/dev/null | python3 -c "
 import sys, json
 tags = json.load(sys.stdin)
 models = [m['name'] for m in tags.get('models', [])]
 sys.exit(0 if any('$OLLAMA_MODEL' in m for m in models) else 1)
 " 2>/dev/null; then
-        echo "Model $OLLAMA_MODEL is available."
-    else
-        echo "Pulling model $OLLAMA_MODEL (this may take a few minutes on first run)..."
+        echo "Pulling model $OLLAMA_MODEL..."
         curl -sf http://localhost:11434/api/pull -d "{\"name\": \"$OLLAMA_MODEL\", \"stream\": false}"
-        echo ""
-        echo "Model $OLLAMA_MODEL pulled."
+        echo "Done."
     fi
 }
 
-cmd_up() {
-    echo "==> Starting Qdrant..."
-    docker compose up -d
-
-    wait_for_qdrant
-
-    if [ "$LLM_BACKEND" = "ollama" ]; then
-        echo "==> Setting up Ollama..."
-        ensure_ollama
+ensure_venvs() {
+    # MCP server
+    if [ ! -d mcp-server/.venv ]; then
+        echo "Setting up MCP server venv..."
+        python3 -m venv mcp-server/.venv
+        mcp-server/.venv/bin/pip install -e "mcp-server/.[dev]" --quiet
     fi
+    # Slack bot
+    if [ ! -d slackbot/.venv ]; then
+        echo "Setting up Slack bot venv..."
+        python3 -m venv slackbot/.venv
+        slackbot/.venv/bin/pip install -e "slackbot/.[dev]" --quiet
+    fi
+}
 
-    echo "==> Ingesting docs into Qdrant..."
-    python scripts/ingest.py
-
+cmd_mcp() {
+    ensure_ollama
+    ensure_venvs
     echo ""
-    kill_server
-    echo "==> Starting server on http://localhost:8000 (LLM_BACKEND=$LLM_BACKEND)..."
-    echo "    Press Ctrl+C to stop the server. Run './dev.sh down' to stop containers."
-    python -m src.main
+    cd mcp-server
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    python test_cli.py --model "$OLLAMA_MODEL"
 }
 
-kill_server() {
-    local pid
-    pid=$(lsof -ti:8000 2>/dev/null || true)
-    if [ -n "$pid" ]; then
-        echo "Killing existing process on port 8000 (pid $pid)..."
-        kill "$pid" 2>/dev/null || true
-        sleep 1
-    fi
+cmd_bot() {
+    ensure_ollama
+    ensure_venvs
+    echo ""
+    cd slackbot
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    LLM_BACKEND=ollama OLLAMA_MODEL="$OLLAMA_MODEL" python -m polygon_bot.cli
+}
+
+cmd_slack() {
+    ensure_venvs
+    cd slackbot
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+    python -m polygon_bot.main
 }
 
 cmd_down() {
-    echo "==> Stopping all services..."
-    kill_server
-    docker compose --profile ollama down
-    echo "Done. All services stopped."
+    echo "Stopping Ollama..."
+    docker compose -f slackbot/docker-compose.yml down
+    echo "Done."
 }
 
-cmd_ingest() {
-    wait_for_qdrant
-    echo "==> Ingesting docs into Qdrant..."
-    python scripts/ingest.py
-}
-
-cmd_server() {
-    kill_server
-    echo "==> Starting server on http://localhost:8000 (LLM_BACKEND=$LLM_BACKEND)..."
-    python -m src.main
+cmd_test() {
+    ensure_venvs
+    echo "==> Testing MCP server..."
+    (cd mcp-server && source .venv/bin/activate && python -m pytest tests/ -v)
+    echo ""
+    echo "==> Testing Slack bot..."
+    (cd slackbot && source .venv/bin/activate && python -m pytest tests/ -v)
 }
 
 case "${1:-help}" in
-    up)      cmd_up ;;
+    mcp)     cmd_mcp ;;
+    bot)     cmd_bot ;;
+    slack)   cmd_slack ;;
     down)    cmd_down ;;
-    ingest)  cmd_ingest ;;
-    server)  cmd_server ;;
+    test)    cmd_test ;;
     *)
-        echo "Usage: ./dev.sh {up|down|ingest|server}"
+        echo "Usage: ./dev.sh {mcp|bot|slack|down|test}"
         echo ""
-        echo "  up      — Start Qdrant + Ollama, pull model, ingest docs, run server"
-        echo "  down    — Stop all containers"
-        echo "  ingest  — Re-ingest docs into Qdrant (must be running)"
-        echo "  server  — Run just the server (deps must be running)"
+        echo "  mcp     — Test MCP server tools with Ollama (interactive)"
+        echo "  bot     — Test Slack bot routing with Ollama (interactive, no Slack needed)"
+        echo "  slack   — Run the actual Slack bot (needs Slack tokens in slackbot/.env)"
+        echo "  down    — Stop Ollama container"
+        echo "  test    — Run tests for both components"
         exit 1
         ;;
 esac

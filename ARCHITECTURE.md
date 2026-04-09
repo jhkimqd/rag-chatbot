@@ -1,115 +1,130 @@
-# Architecture Specification: Polygon Hybrid Bot (v2.0)
+# Architecture: Polygon Chatbot (v3.0)
 
-## 1. System Overview
+## Design Decision: Split Architecture
 
-The Polygon Hybrid Bot is an enterprise-grade AI agent designed to bridge the gap between static documentation and real-time operational health. It uses a **Protocol Switch** architecture to route user input through three distinct processing lanes:
+The original monolithic chatbot (v2) combined RAG documentation, operational tooling, and a public-facing API into one service. This created problems:
 
-1. Deterministic Commands
-2. Natural Language RAG
-3. Real-Time Operational Tooling
+- **Cost exposure** -- Every public query triggered 3-4 LLM calls on our API key
+- **Abuse surface** -- Rate limiting and guards can't fully prevent misuse at scale
+- **Ops credential risk** -- Datadog/Incident.io keys sat behind a public endpoint
 
-### High-Level Flow
+v3 splits into two independent components with clear boundaries.
+
+## Component 1: MCP Server (Public)
+
+A Model Context Protocol server that makes Polygon knowledge available to any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, etc.).
+
+### How it works
 
 ```text
-┌──────────────────────────────────────────────────────────────────┐
-│                   INPUT ROUTING (The Protocol Switch)            │
-│                                                                  │
-│  User Input (e.g., "/gas-usage" vs "How do I bridge?")           │
-│       │                                                          │
-│       ▼                                                          │
-│  ┌─────────────┐       Match (/)      ┌──────────────────────┐   │
-│  │ Regex       │─────────────────────►│   Command Registry   │   │
-│  │ Dispatcher  │                      │ (Deterministic Logic)│   │
-│  └──────┬──────┘                      └──────────┬───────────┘   │
-│         │ No Match (Natural Language)            │               │
-│         ▼                                        │               │
-│  ┌─────────────┐       On-Topic       ┌──────────┴───────────┐   │
-│  │ Input Guard │─────────────────────►│    Intent Manager    │   │
-│  │ (Haiku)     │                      │  (Classifies Goal)   │   │
-│  └──────┬──────┘                      └────┬────────────┬────┘   │
-│         │                                  │            │        │
-│         ▼                                  ▼            ▼        │
-│  ┌────────────┐                    ┌───────────┐  ┌────────────┐ │
-│  │ Reject /   │                    │ RAG Path  │  │  Ops Path  │ │
-│  │ Redirect   │                    │ (Docs)    │  │ (Metrics)  │ │
-│  └────────────┘                    └─────┬─────┘  └─────┬──────┘ │
-│                                          │              │        │
-│                                          ▼              ▼        │
-│                                   ┌──────────────────────────┐   │
-│                                   │    Response Synthesis    │   │
-│                                   │ (Markdown + Charts + UI) │   │
-│                                   └──────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
+User's AI Client (Claude, GPT, etc.)
+    │
+    ▼
+┌──────────────────────────────────┐
+│  MCP Server (stdio transport)    │
+│                                  │
+│  Tools:                          │
+│  ├─ search_polygon_docs(query)   │ → TF-IDF over bundled markdown
+│  ├─ get_polygon_chain_status()   │ → JSON-RPC to public endpoint
+│  └─ get_gas_usage(block_count)   │ → JSON-RPC block analysis
+│                                  │
+│  Resources:                      │
+│  ├─ docs://polygon/list          │ → Document inventory
+│  └─ docs://polygon/{name}        │ → Full document text
+└──────────────────────────────────┘
 ```
 
-## 2. Core Components
+### Key design choices
 
-### 2.1 The Regex Dispatcher (Layer 0)
+- **No vector DB** -- TF-IDF over ~150KB of docs is fast enough and eliminates the Qdrant dependency
+- **No LLM calls** -- The user's own AI handles generation; we just provide search and data
+- **No auth** -- Runs locally via stdio, so there's no network exposure
+- **No guards** -- Users querying their own AI don't need prompt injection protection
+- **Bundled docs** -- Markdown files are included in the pip wheel via hatch `force-include`, with env var (`POLYGON_DOCS_DIR`) and repo-checkout fallbacks
 
-The entry point for all queries. It checks for a leading `/` to trigger the Command Registry.
+### Distribution
 
-- **Role:** Instant execution of high-precision business logic.
-- **Bypass:** Skips all LLM classification to save latency (~<50ms) and cost ($0).
+```bash
+pip install polygon-mcp     # from PyPI (future)
+polygon-mcp                 # runs on stdio
+```
 
-### 2.2 Command Registry (Plugin System)
+### Local testing
 
-A collection of deterministic tool-scripts mapped to slash commands.
+`test_cli.py` simulates the MCP-to-LLM flow locally: it searches docs and fetches chain data using the MCP tools directly, then sends combined context to Ollama for generation. Run via `./dev.sh mcp` from the repo root.
 
-- **Structure:** Each command is a modular plugin (e.g., `src/commands/gas_usage.py`).
-- **Logic example:** `/gas-usage [start] [end]` fetches blocks via RPC and calculates:
+## Component 2: Slack Bot (Internal)
 
-$$
-\text{Utilization \%} = \left( \frac{\text{block.gasUsed}}{\text{block.gasLimit}} \right) \times 100
-$$
+An ops-focused Slack bot that answers operational questions using a tool-calling agent.
 
-- **Visualization:** Returns pre-formatted UI components (charts/tables), not only plain text.
+### How it works
 
-### 2.3 Intent Manager (Layer 1)
+```text
+Slack Message (or CLI input)
+    │
+    ▼
+┌────────────────┐    Match (/)    ┌──────────────┐
+│ Regex          │────────────────►│ Command      │
+│ Dispatcher     │                 │ Registry     │
+└───────┬────────┘                 │ /health      │
+        │ No match                 │ /gas-usage   │
+        ▼                          │ /help        │
+┌────────────────┐                 └──────────────┘
+│ Ops Agent      │
+│ (Claude tool   │
+│  calling loop) │
+│                │
+│ Tools:         │
+│ ├─ get_chain_status        → Polygon JSON-RPC
+│ ├─ query_datadog_metrics   → Datadog API
+│ ├─ get_active_incidents    → Incident.io API
+│ └─ get_active_monitors     → Datadog API
+└────────────────┘
+```
 
-For non-command input, a Claude 3 Haiku call classifies intent into one of three buckets:
+### Key design choices
 
-- `DOCS`: Technical "how-to" or "what is" questions.
-- `OPS`: Questions about current network health (p95 latency, RPC status).
-- `HYBRID`: Debugging that needs both docs and metrics (e.g., "The network is slow, what are the remediation steps?").
+- **No RAG pipeline** -- Documentation queries are handled by the MCP server now
+- **No intent classifier** -- Everything is either a slash command or an ops question
+- **No input/output guards** -- Slack workspace membership is the auth boundary
+- **No public HTTP endpoint** -- Socket Mode only, no inbound webhooks needed
+- **CLI mode for testing** -- `cli.py` routes through the same `route_input` function without needing Slack tokens
 
-## 3. Data Pipelines
+### Ollama limitation
 
-### 3.1 RAG Pipeline (Documentation)
+The Ollama backend does not support tool-calling. When using `LLM_BACKEND=ollama`, the ops agent returns Ollama's text response directly without invoking tools (no live Datadog/Incident.io/RPC data). Slash commands (`/health`, `/gas-usage`) work fully regardless of backend since they're deterministic RPC calls. Use the Anthropic backend for full tool-calling support.
 
-- **Vector DB:** Qdrant or Pinecone.
-- **Search:** Hybrid search (vector + BM25) over Polygon docs, GitHub issues, and runbooks.
-- **Freshness:** Re-indexed daily via GitHub Actions.
+### What was removed from v2
 
-### 3.2 Tool-Calling Agent (Operations)
+| Component | Reason |
+|-----------|--------|
+| FastAPI `/chat` endpoint | No public API needed |
+| RAG pipeline (Qdrant, embeddings, retriever) | Docs served via MCP server now |
+| Input guard (topic filter, injection detection) | Slack workspace = trusted users |
+| Output guard (response policy check) | Internal tool, trusted context |
+| Intent manager (DOCS/OPS/HYBRID classifier) | All queries are ops; docs via MCP |
+| API key auth + HTTP rate limiting | Slack handles auth; per-user rate limit remains |
 
-- **Model:** Claude 3.5 Sonnet (optimized for reasoning over tool outputs).
-- **Tools:**
-  - Datadog: `query_metrics`, `get_active_monitors`
-  - Incident.io: `get_active_incidents`
-  - Polygon Node: `get_chain_status` (RPC)
+## Shared Components
 
-## 4. UI and Delivery
+Both components use `data/docs/` as the source of truth for Polygon documentation. The MCP server bundles these into the pip wheel at build time; updates require a new release.
 
-The bot supports multi-platform rendering:
+The Polygon RPC client exists in both packages (standalone in MCP, config-aware in Slack bot) to keep them independently deployable with no shared code dependency. Both versions use `asyncio.gather` for concurrent RPC calls.
 
-- **Slack:** Adaptive cards (Block Kit) for first responders.
-- **Web:** Interactive React components (Recharts) for deep-dive analysis.
-- **Citations:** Every response must include a source tag (e.g., `[source: polygon-docs]` or `[source: datadog]`).
+## Local Development
 
-## 5. OKR Alignment and ROI
+```bash
+./dev.sh mcp     # MCP tools + Ollama (interactive REPL)
+./dev.sh bot     # Slack bot routing + Ollama (interactive REPL, no Slack needed)
+./dev.sh test    # pytest for both components
+./dev.sh down    # stop Ollama
+```
 
-This architecture is designed to meet the H1 2026 Reliability OKR:
+The root `dev.sh` handles Ollama lifecycle (starts Docker container if not running, pulls model on first use) and sets up per-component venvs.
 
-> Reduce manual observability toil for first responders by >=80%.
+## Deployment
 
-### Measurement Metrics
-
-- **Command usage:** Tracking `/gas-usage` vs. manual Polygonscan visits.
-- **Toil reduction:** Time saved by auto-pulling runbooks during active incidents.
-- **Accuracy:** Percentage of grounded answers cited from official sources.
-
-## 6. Implementation Phases
-
-1. **Phase 1 (MVP):** Basic RAG over docs.
-2. **Phase 2 (ChatOps):** Command Registry with `/gas-usage` and `/health`.
-3. **Phase 3 (Agentic):** Full tool-calling integration with Datadog and Slack integration.
+| Component | Deployment | Infra |
+|-----------|-----------|-------|
+| MCP Server | `pip install` on user's machine | None (local process) |
+| Slack Bot | Container or VM in your infra | Ollama or Anthropic API key |

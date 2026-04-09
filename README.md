@@ -1,227 +1,112 @@
-# Polygon Hybrid Bot
+# Polygon Chatbot
 
-AI-powered support chatbot for the Polygon ecosystem. Combines RAG over documentation with real-time operational tooling (Datadog, Incident.io, Polygon RPC).
+AI-powered tools for the Polygon ecosystem, split into two independently deployable components:
 
-For architectural details see [ARCHITECTURE.md](ARCHITECTURE.md).
+| Component | Purpose | Audience | Cost |
+|-----------|---------|----------|------|
+| [MCP Server](mcp-server/) | Polygon docs + chain data as AI tools | Public | Zero (users bring their own AI) |
+| [Slack Bot](slackbot/) | Ops agent with Datadog, Incident.io, RPC | Internal team | Your LLM API key only |
 
----
+## Why this split?
 
-## Prerequisites
+A public chatbot is expensive to run, hard to secure from abuse, and exposes internal ops tooling. Instead:
 
-- Python 3.10+
-- Docker (for Qdrant and Ollama)
-
-## Quick Start
-
-```bash
-# Clone
-git clone <repo-url> && cd polygon-chatbot
-
-# Configure (defaults to Ollama — no API key needed)
-cp .env.example .env
-
-# Start everything (Qdrant + Ollama + doc ingestion + server)
-./dev.sh up
-
-# Test it
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "How do I deploy a contract on Polygon PoS?"}'
-
-# Stop everything
-./dev.sh down
-```
-
-The API is now live at `http://localhost:8000`.
-
-### dev.sh commands
-
-| Command            | Description                                         |
-|--------------------|-----------------------------------------------------|
-| `./dev.sh up`      | Start Qdrant + Ollama, pull model, ingest docs, run server |
-| `./dev.sh down`    | Stop all containers                                 |
-| `./dev.sh ingest`  | Re-ingest docs into Qdrant (must be running)        |
-| `./dev.sh server`  | Run just the server (deps must be running)          |
-
-### LLM Backend
-
-Set `LLM_BACKEND` in `.env`:
-
-| Backend | Config | Notes |
-|---------|--------|-------|
-| **Ollama** (default) | `LLM_BACKEND=ollama` | Free, local. Model pulled automatically on first `./dev.sh up` |
-| **Anthropic API** | `LLM_BACKEND=anthropic` + `ANTHROPIC_API_KEY=sk-ant-...` | Production-grade, requires API key from console.anthropic.com |
-
-> **Alternative setup:** Install [direnv](https://direnv.net) and run `direnv allow` for auto venv management. Or manually: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
-
-## API Usage
-
-### Chat
-
-```bash
-# Natural language question
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "How do I deploy a contract on Polygon PoS?"}'
-
-# Slash command
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "/health"}'
-
-# Gas utilization (last 20 blocks)
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "/gas-usage 20"}'
-
-# With API key auth (if CHATBOT_API_KEY is set)
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-secret-key" \
-  -d '{"message": "/help"}'
-```
-
-### Health Check
-
-```bash
-curl http://localhost:8000/health
-# {"status":"ok","version":"0.1.0"}
-```
-
-### Swagger Docs
-
-Available at `http://localhost:8000/docs` in development mode (disabled when `ENVIRONMENT=production`).
-
-## Slash Commands
-
-| Command | Description |
-|---------|-------------|
-| `/health` | Network health summary (block height, gas price, sync status) |
-| `/gas-usage [count]` | Gas utilization for the last N blocks (default: 10, max: 100) |
-| `/help` | List available commands |
-
-## Configuration
-
-All config is via environment variables (or `.env` file). See [.env.example](.env.example) for the full list.
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | **Yes** | Anthropic API key for Claude |
-| `QDRANT_URL` | No | Qdrant server URL (default: `http://localhost:6333`) |
-| `CHATBOT_API_KEY` | No | If set, requires `X-API-Key` header on `/chat` |
-| `ENVIRONMENT` | No | `development` (default) or `production` |
-| `EMBEDDING_MODEL` | No | sentence-transformers model (default: `all-MiniLM-L6-v2`) |
-| `SLACK_BOT_TOKEN` | No | Enables Slack integration |
-| `DATADOG_API_KEY` | No | Enables Datadog metrics tools |
-| `INCIDENT_IO_API_KEY` | No | Enables Incident.io tools |
-
-## Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run with verbose output
-pytest -v
-
-# Run a specific test file
-pytest tests/test_protocol_switch.py -v
-
-# Lint
-ruff check src/ tests/
-
-# Lint with auto-fix
-ruff check --fix src/ tests/
-```
-
-Tests use mocks for all external services — no API keys or running services needed.
+- **MCP Server** — Users install it locally and query Polygon knowledge with their own AI (Claude, GPT, etc.). No hosting, no auth, no API costs for you.
+- **Slack Bot** — Your team uses it in Slack for operational queries. Slack workspace membership is the auth boundary. Datadog and Incident.io credentials stay internal.
 
 ## Local Development
 
-The simplest path is `./dev.sh up` which handles everything. For more control:
+Both components can be tested locally with [Ollama](https://ollama.com) -- no API keys or Slack workspace needed.
 
 ```bash
-# Start just Qdrant
-docker compose up -d
+# Test MCP server tools with Ollama (interactive)
+./dev.sh mcp
 
-# Ingest/re-ingest docs
-python scripts/ingest.py
+# Test Slack bot routing with Ollama (interactive, no Slack needed)
+./dev.sh bot
 
-# Run the server with hot reload
-uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
+# Run tests for both components
+./dev.sh test
+
+# Stop Ollama container
+./dev.sh down
 ```
 
-> **Note:** The embedding model (`all-MiniLM-L6-v2`) downloads automatically on first use (~80MB). Subsequent starts are instant.
+The first run sets up venvs, pulls the Ollama model, and starts an interactive REPL where you can type questions and see the full pipeline in action.
 
-### Adding Documentation
+### dev.sh commands
 
-Add markdown files to `data/docs/`, then re-ingest:
+| Command | Description |
+|---------|-------------|
+| `./dev.sh mcp` | Test MCP tools + Ollama (interactive REPL) |
+| `./dev.sh bot` | Test Slack bot routing + Ollama (interactive REPL, no Slack needed) |
+| `./dev.sh slack` | Run the real Slack bot (needs tokens in `slackbot/.env`) |
+| `./dev.sh test` | Run pytest for both components |
+| `./dev.sh down` | Stop Ollama container |
+
+### With Claude Code (MCP Server)
 
 ```bash
-./dev.sh ingest
+cd mcp-server && pip install -e .
+claude mcp add polygon-knowledge -- polygon-mcp
 ```
 
-## Production Deployment
-
-### 1. Create a Dockerfile
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY pyproject.toml .
-COPY src/ src/
-COPY data/ data/
-
-RUN pip install --no-cache-dir .
-
-# Pre-download the embedding model at build time
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-
-EXPOSE 8000
-
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### 2. Build and push
+### With Slack (Slack Bot)
 
 ```bash
-# Authenticate with GCP
-gcloud auth configure-docker
-
-# Build
-docker build -t gcr.io/YOUR_PROJECT/polygon-chatbot:latest .
-
-# Push
-docker push gcr.io/YOUR_PROJECT/polygon-chatbot:latest
+cd slackbot
+cp .env.example .env
+# Fill in Slack tokens + optional Datadog/Incident.io keys
+./dev.sh up
 ```
 
-### 3. Deploy to Cloud Run
+## Repository Structure
 
-Cloud Run or some dedicated VM + usual devops.
-
-### 4. Qdrant in production
-
-Use [Qdrant Cloud](https://cloud.qdrant.io/) (managed) or deploy on GKE:
-
-```bash
-# Set Qdrant Cloud URL in Cloud Run env
-gcloud run services update polygon-chatbot \
-  --set-env-vars "QDRANT_URL=https://your-cluster.qdrant.io" \
-  --set-secrets "QDRANT_API_KEY=qdrant-api-key:latest"
+```text
+polygon-chatbot/
+├── dev.sh                  # Top-level dev script (manages Ollama, routes to components)
+├── data/docs/              # Polygon documentation (shared source of truth)
+├── mcp-server/             # Public: MCP server for Polygon knowledge
+│   ├── src/polygon_mcp/
+│   │   ├── server.py       # MCP tools + resources
+│   │   ├── docs.py         # Doc loading, chunking, TF-IDF search
+│   │   └── rpc.py          # Standalone Polygon RPC client
+│   ├── test_cli.py         # Interactive CLI for testing with Ollama
+│   └── tests/
+├── slackbot/               # Internal: Slack bot for ops
+│   ├── src/polygon_bot/
+│   │   ├── main.py         # Slack Bolt app (Socket Mode)
+│   │   ├── cli.py          # Interactive CLI for testing without Slack
+│   │   ├── router.py       # Commands + ops agent dispatch
+│   │   ├── commands/       # /health, /gas-usage, /help
+│   │   ├── ops/            # Tool-calling agent (Datadog, Incident.io, RPC)
+│   │   └── integrations/   # Polygon RPC client
+│   ├── dev.sh              # Slack bot dev script
+│   ├── docker-compose.yml  # Ollama container
+│   └── tests/
+├── ARCHITECTURE.md
+└── README.md
 ```
 
-## Project Structure
+## Architecture
 
+```text
+PUBLIC (zero hosting cost)              INTERNAL (Slack workspace)
+┌─────────────────────────┐            ┌──────────────────────────┐
+│  MCP Server             │            │  Slack Bot               │
+│                         │            │                          │
+│  Tools:                 │            │  /health                 │
+│  - search_polygon_docs  │            │  /gas-usage              │
+│  - get_polygon_chain_   │            │  "is the network down?"  │
+│    status               │            │  "check datadog for..."  │
+│  - get_gas_usage        │            │                          │
+│                         │            │  Ops Agent Tools:        │
+│  Resources:             │            │  - Datadog metrics       │
+│  - docs://polygon/*     │            │  - Incident.io           │
+│                         │            │  - Polygon RPC           │
+│  User's own LLM ►──────│            │  - Monitor alerts        │
+│  User's own API key     │            │                          │
+└─────────────────────────┘            └──────────────────────────┘
 ```
-src/
-├── main.py              # FastAPI app (auth, rate limiting, timeouts)
-├── config.py            # Pydantic settings from env vars
-├── commands/            # Slash command plugins (/health, /gas-usage, /help)
-├── guard/               # Input guard (topic relevance filter)
-├── router/              # Protocol Switch, intent classifier, regex dispatcher
-├── rag/                 # RAG pipeline (embeddings, retriever, generation)
-├── ops/                 # Tool-calling agent (Datadog, Incident.io, RPC)
-├── synthesis/           # Response formatting and citations
-└── integrations/        # Slack, Polygon RPC clients
-```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design rationale and each component's README for detailed setup.
